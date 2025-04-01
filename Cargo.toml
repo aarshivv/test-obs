@@ -5,10 +5,18 @@ edition = "2021"
 
 [dependencies]
 # libobs-sources = "0.1.1"
-libobs-window-helper = { git = "https://github.com/joshprk/libobs-rs.git"}
+# libobs-window-helper = { git = "https://github.com/joshprk/libobs-rs.git"}
+# # libobs = "0.1.3"
+# libobs-wrapper = { git = "https://github.com/joshprk/libobs-rs.git"}
+# libobs-sources = { git = "https://github.com/joshprk/libobs-rs.git"}
+# libobs-new = { git = "https://github.com/joshprk/libobs-rs.git"}
+
+libobs-window-helper = { path = "../libobs-rs/libobs-window-helper"}
 # libobs = "0.1.3"
-libobs-wrapper = { git = "https://github.com/joshprk/libobs-rs.git"}
-libobs-sources = { git = "https://github.com/joshprk/libobs-rs.git"}
-libobs-new = { git = "https://github.com/joshprk/libobs-rs.git"}
+libobs-wrapper = { path = "../libobs-rs/libobs-wrapper"}
+libobs-sources = { path = "../libobs-rs/libobs-sources"}
+libobs-new = { path = "../libobs-rs/libobs"}
 env_logger = "0.11.5"
 tokio = { version = "1.39.2", features = ["full"]}
+vsprintf = "2.0.0"
+windows = { version = "0.61.1", features = ["Win32_System_WinRT"] }

@@ -1,36 +1,45 @@
 use std::env::{self, current_dir};
-use std::ffi::CStr;
+use std::ffi::{c_char, CStr};
 use std::fs::File;
 use std::io::{stdout, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
-use std::{cmp, thread};
+use std::{cmp, ptr, thread};
 
 use env_logger::Env;
-use libobs_sources::windows::{MonitorCaptureSourceBuilder, MonitorCaptureSourceUpdater, WindowCaptureSourceBuilder, WindowCaptureSourceUpdater};
+use libobs_new::obs_enum_source_types;
+use libobs_sources::windows::{
+    MonitorCaptureSourceBuilder, MonitorCaptureSourceUpdater, ObsDisplayCaptureMethod,
+    WindowCaptureSourceBuilder, WindowCaptureSourceUpdater,
+};
+use libobs_window_helper::{get_all_windows, WindowInfo, WindowSearchMode};
 use libobs_wrapper::context::ObsContext;
 use libobs_wrapper::data::video::ObsVideoInfo;
+use libobs_wrapper::data::ObsObjectUpdater;
 use libobs_wrapper::data::{ObsData, ObsObjectBuilder};
 use libobs_wrapper::encoders::{ObsContextEncoders, ObsVideoEncoderType};
 use libobs_wrapper::enums::ObsLogLevel;
 use libobs_wrapper::logger::ObsLogger;
 use libobs_wrapper::scenes::ObsSceneRef;
+use libobs_wrapper::sources::ObsSourceBuilder;
 use libobs_wrapper::sources::ObsSourceRef;
 use libobs_wrapper::utils::traits::ObsUpdatable;
-use libobs_wrapper::utils::{AudioEncoderInfo, ObsPath, ObsString, OutputInfo, SourceInfo, StartupInfo, VideoEncoderInfo};
-use libobs_window_helper::{get_all_windows, WindowInfo, WindowSearchMode};
-use libobs_wrapper::sources::ObsSourceBuilder;
-use libobs_wrapper::data::ObsObjectUpdater;
+use libobs_wrapper::utils::{
+    AudioEncoderInfo, ObsPath, ObsString, OutputInfo, SourceInfo, StartupInfo, VideoEncoderInfo,
+};
+use sharp::{monitor_record, test_main};
 
 // use libobs::wrapper::{
-//     StartupInfo, ObsContext, OutputInfo, ObsData, VideoEncoderInfo, 
+//     StartupInfo, ObsContext, OutputInfo, ObsData, VideoEncoderInfo,
 //     AudioEncoderInfo, SourceInfo, ObsPath
 // };
 
+mod sharp;
+
 #[derive(Debug)]
 struct DebugLogger {
-    f: File
+    f: File,
 }
 impl ObsLogger for DebugLogger {
     fn log(&mut self, level: libobs_wrapper::enums::ObsLogLevel, msg: String) {
@@ -44,13 +53,17 @@ impl ObsLogger for DebugLogger {
 
 /// The string returned is the name of the obs output
 pub fn initialize_obs_with_log<'a>(rec_file: ObsString, file_logger: bool) -> (ObsContext, String) {
-    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug")).is_test(true).try_init();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+        .is_test(true)
+        .try_init();
 
     // Start the OBS context
     #[allow(unused_mut)]
     let mut startup_info = StartupInfo::default();
     if file_logger {
-        let _l = DebugLogger { f: File::create(current_dir().unwrap().join("obs.log")).unwrap() };
+        let _l = DebugLogger {
+            f: File::create(current_dir().unwrap().join("obs.log")).unwrap(),
+        };
         //startup_info = startup_info.set_logger(Box::new(_l));
     }
 
@@ -79,14 +92,9 @@ pub fn initialize_obs_with_log<'a>(rec_file: ObsString, file_logger: bool) -> (O
     let encoders = ObsContext::get_available_video_encoders();
 
     println!("Available encoders: {:?}", encoders);
-    let encoder =  encoders.iter().find(|e| **e == ObsVideoEncoderType::H264_TEXTURE_AMF || **e == ObsVideoEncoderType::AV1_TEXTURE_AMF).unwrap();
-    println!("Using encoder {:?}", encoder);
-    let video_info = VideoEncoderInfo::new(
-        encoder.clone(),
-        "video_encoder",
-        Some(video_settings),
-        None,
-    );
+    // let encoder =  encoders.iter().find(|e| **e == ObsVideoEncoderType::H264_TEXTURE_AMF || **e == ObsVideoEncoderType::AV1_TEXTURE_AMF).unwrap();
+    // println!("Using encoder {:?}", encoder);
+    let video_info = VideoEncoderInfo::new("obs_x264", "video_encoder", Some(video_settings), None);
 
     let video_handler = ObsContext::get_video_ptr().unwrap();
     output.video_encoder(video_info, video_handler).unwrap();
@@ -104,6 +112,23 @@ pub fn initialize_obs_with_log<'a>(rec_file: ObsString, file_logger: bool) -> (O
     (context, output_name.to_string())
 }
 
+fn list_source_types() {
+    let mut idx = 0;
+    let mut id: *const c_char = ptr::null();
+
+    unsafe {
+        while obs_enum_source_types(idx, &mut id) {
+            if !id.is_null() {
+                let c_str = CStr::from_ptr(id);
+                if let Ok(source_id) = c_str.to_str() {
+                    println!("Source Type {}: {}", idx, source_id);
+                }
+            }
+            idx += 1;
+        }
+    }
+}
+
 pub async fn main3() {
     let rec_file = ObsPath::from_relative("monitor_capture.mp4").build();
     let path_out = PathBuf::from(rec_file.to_string());
@@ -118,41 +143,60 @@ pub async fn main3() {
     let first_m = monitors.first().unwrap();
 
     let source_name = "monitor_test_new";
-    // let m = MonitorCaptureSourceBuilder::new(source_name)
-    //     .set_monitor(&monitors[0]).build();
+    let other = MonitorCaptureSourceBuilder::new(source_name)
+        .set_monitor(&monitors[0])
+        .build();
+    let m = MonitorCaptureSourceBuilder::new(source_name)
+        .set_monitor(&monitors[0])
+        .set_capture_method(ObsDisplayCaptureMethod::MethodWgc)
+        .add_to_scene(&mut scene)
+        .unwrap();
 
     // println!("M: {m:#?}");
 
-    let mut monitor_source_settings = ObsData::new();
-    monitor_source_settings
-        // .set_int("monitor", first_m.id.into())
-        .set_string("monitor_id", "\\\\?\\DISPLAY#BOE07F6#5&74e87ec&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")
-        // .set_string("id", "\\\\?\\DISPLAY#BOE07F6#5&74e87ec&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")
-        // .set_string("setting_id", "\\\\?\\DISPLAY#BOE07F6#5&74e87ec&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")
-        // .set_string("capture_method", "BitBlt")
-        .set_bool("cursor", true)
-        .set_bool("capture_layered_windows", true)
-        .set_bool("force_sdr", false);
+    // let source_type = list_source_types();
 
-    // ObsSourceRef::new("monitor_capture", source_name, Some(monitor_source_settings), None).unwrap()'
-    let monitor_capture_source = SourceInfo::new("monitor_capture", source_name, Some(monitor_source_settings), None);
+    // let mut monitor_source_settings = ObsData::new();
+    // monitor_source_settings
+    //     // .set_int("monitor", first_m.id.into())
+    //     .set_string("monitor_id", "\\\\?\\DISPLAY#BOE07F6#5&74e87ec&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")
+    //     // .set_string("monitor_id", "0")
+    //     // .set_string("id", "\\\\?\\DISPLAY#BOE07F6#5&74e87ec&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")
+    //     // .set_string("setting_id", "\\\\?\\DISPLAY#BOE07F6#5&74e87ec&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")
+    //     .set_string("capture_method", "BitBlt")
+    //     // .set_string("mode", "any_fullscreen")
+    //     // .set_string("capture_method", "BitBlt")
+    //     // .set_string("capture_method", "BitBlt")
+    //     // .set_bool("sli_crossfire_capture_mode", true)
+    //     // .set_bool("allow_transparency", true)
+    //     .set_bool("capture_cursor", true)
+    //     // .set_bool("capture_layered_windows", true)
+    //     .set_bool("force_sdr", false)
+    // ;
 
-    scene.add_source(monitor_capture_source).unwrap();
+    // ObsSourceRef::new("wasapi_input_capture", source_name, Some(monitor_source_settings.clone()), None).unwrap();
+    // let monitor_capture_source = SourceInfo::new("monitor_capture", source_name, Some(monitor_source_settings), None);
+
+    // scene.add_source(monitor_capture_source).unwrap();
 
     // let old_source = scene.get_source_mut(source_name).unwrap();
 
     // *data.
     // println!("SSS: {old_source:?}");
+    let o = context.displays();
     let mut output = context.get_output(&output).unwrap();
     output.start().unwrap();
-    println!("Recording started");
+    println!("Recording started!");
     // std::thread::sleep(Duration::from_secs(20));
     // let mut source = context.scenes_mut().get_mut(0).unwrap().get_source_by_index(0).unwrap();
     // source.create_updater::<MonitorCaptureSourceUpdater>().set_monitor(&monitors[0]).update();
     // stdout().flush().unwrap();
-    tokio::time::sleep(Duration::from_secs(15)).await;
 
-    println!("Recording stop");
+    println!("Press enter to stop recording and clean up...");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+
+    println!("Recording stopped!");
 
     output.stop().unwrap();
 }
@@ -172,6 +216,8 @@ fn find_notepad() -> Option<WindowInfo> {
 pub async fn main() {
     // test_window_capture().await;
     main3().await;
+    // monitor_record().await;
+    // test_main();
     // let venv = env::var("LIBOBS_PATH").unwrap();
     // println!("VENV: {venv}");
 }
@@ -208,23 +254,23 @@ pub async fn test_window_capture() {
     output.start().unwrap();
     println!("Recording started");
 
-    let windows =
-        WindowCaptureSourceBuilder::get_windows(WindowSearchMode::ExcludeMinimized).unwrap()
-        .into_iter()
-        .filter(|e| e.obs_id.to_lowercase().contains("code"))
-        .collect::<Vec<_>>();
-    for i in 0..cmp::min(5, windows.len()) {
-        let mut source = context.scenes_mut().get_mut(0).unwrap().get_source_by_index(0).unwrap();
-        let w = windows.get(i).unwrap();
-        println!("Setting to {:?}", w.obs_id);
-        source.create_updater::<WindowCaptureSourceUpdater>()
-            .set_window(w)
-            .update();
+    // let windows =
+    //     WindowCaptureSourceBuilder::get_windows(WindowSearchMode::ExcludeMinimized).unwrap()
+    //     .into_iter()
+    //     .filter(|e| e.obs_id.to_lowercase().contains("code"))
+    //     .collect::<Vec<_>>();
+    // for i in 0..cmp::min(5, windows.len()) {
+    //     let mut source = context.scenes_mut().get_mut(0).unwrap().get_source_by_index(0).unwrap();
+    //     let w = windows.get(i).unwrap();
+    //     println!("Setting to {:?}", w.obs_id);
+    //     source.create_updater::<WindowCaptureSourceUpdater>()
+    //         .set_window(w)
+    //         .update();
 
-        println!("Recording for {} seconds", i);
-        stdout().flush().unwrap();
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
+    //     println!("Recording for {} seconds", i);
+    //     stdout().flush().unwrap();
+    // }
+    tokio::time::sleep(Duration::from_secs(10)).await;
     println!("Recording stop");
 
     let mut output = context.get_output(&output_name).unwrap();
@@ -232,7 +278,6 @@ pub async fn test_window_capture() {
 
     // test_video(&path_out).await.unwrap();
 }
-
 
 pub fn main2() {
     // Start the OBS context
@@ -251,12 +296,9 @@ pub fn main2() {
 
     // Set up output to ./recording.mp4
     let mut output_settings = ObsData::new();
-    output_settings
-        .set_string("path", ObsPath::from_relative("recording.mp4").build());
+    output_settings.set_string("path", ObsPath::from_relative("recording.mp4").build());
 
-    let output_info = OutputInfo::new(
-        "ffmpeg_muxer", "output", Some(output_settings), None
-    );
+    let output_info = OutputInfo::new("ffmpeg_muxer", "output", Some(output_settings), None);
 
     let mut output = context.output(output_info).unwrap();
 
@@ -271,34 +313,25 @@ pub fn main2() {
         .set_string("rate_control", "cbr")
         .set_int("bitrate", 1000);
 
-    let video_info = VideoEncoderInfo::new(
-        "obs_x264",
-        "video_encoder",
-        Some(video_settings),
-        None,
-    );
+    let video_info = VideoEncoderInfo::new("obs_x264", "video_encoder", Some(video_settings), None);
 
     let video_handler = ObsContext::get_video_ptr().unwrap();
     output.video_encoder(video_info, video_handler).unwrap();
-    
+
     // Register the audio encoder
     let mut audio_settings = ObsData::new();
     audio_settings.set_int("bitrate", 100);
 
-    let audio_info = AudioEncoderInfo::new(
-        "ffmpeg_aac", 
-        "audio_encoder", 
-        Some(audio_settings), 
-        None
-    );
+    let audio_info =
+        AudioEncoderInfo::new("ffmpeg_aac", "audio_encoder", Some(audio_settings), None);
 
     let audio_handler = ObsContext::get_audio_ptr().unwrap();
     output.audio_encoder(audio_info, 0, audio_handler).unwrap();
 
     // let video_source_info = SourceInfo::new(
-    //     "monitor_capture", 
-    //     "video_source", 
-    //     Some(video_source_data), 
+    //     "monitor_capture",
+    //     "video_source",
+    //     Some(video_source_data),
     //     None
     // );
 
@@ -306,7 +339,7 @@ pub fn main2() {
     // Register the source and record
     // output.source(video_source_info, 0).unwrap();
 
-        // Create the video source using game capture
+    // Create the video source using game capture
     // let mut video_source_data = ObsData::new();
     // video_source_data
     //     .set_string("capture_mode", "window")
